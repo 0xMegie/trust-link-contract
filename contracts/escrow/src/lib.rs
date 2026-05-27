@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Bytes, Env};
 
 const MAX_FEE_BPS: u32 = 300;
 
@@ -8,6 +8,7 @@ pub enum DataKey {
     Escrow(u32),
     EscrowCount,
     FeeCollector,
+    Dispute(u32),
 }
 
 #[contracttype]
@@ -32,6 +33,14 @@ pub enum EscrowState {
     Completed,
     Disputed,
     Refunded,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeData {
+    pub evidence_hash: Bytes,
+    pub raised_at: u64,
+    pub status: EscrowState,
 }
 
 #[contracttype]
@@ -68,6 +77,18 @@ fn deduct_and_transfer(env: &Env, token_addr: &Address, recipient: &Address, amo
     token_client.transfer(&env.current_contract_address(), recipient, &net);
 }
 
+fn validate_create_inputs(fee_bps: u32) {
+    assert!(fee_bps <= MAX_FEE_BPS, "fee exceeds maximum");
+}
+
+fn validate_fund_inputs(escrow: &EscrowData) {
+    assert!(escrow.state == EscrowState::Pending, "escrow not pending");
+}
+
+fn validate_raise_dispute_inputs(evidence_hash: &Bytes) {
+    assert!(evidence_hash.len() == 32, "evidence_hash must be exactly 32 bytes");
+}
+
 #[contractimpl]
 #[allow(deprecated)]
 impl Escrow {
@@ -96,14 +117,9 @@ impl Escrow {
         shipping_window: u64,
     ) -> u32 {
         seller.require_auth();
-        assert!(fee_bps <= MAX_FEE_BPS, "fee exceeds maximum");
+        validate_create_inputs(fee_bps);
 
-        let mut count: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::EscrowCount)
-            .unwrap_or(0);
-        count += 1;
+        let count: u32 = env.storage().instance().get(&DataKey::EscrowCount).unwrap_or(0) + 1;
 
         let escrow = EscrowData {
             seller,
@@ -117,13 +133,8 @@ impl Escrow {
             state: EscrowState::Pending,
         };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Escrow(count), &escrow);
-        env.storage()
-            .instance()
-            .set(&DataKey::EscrowCount, &count);
-
+        env.storage().instance().set(&DataKey::Escrow(count), &escrow);
+        env.storage().instance().set(&DataKey::EscrowCount, &count);
         env.events().publish(("create_escrow",), count);
         count
     }
@@ -137,7 +148,7 @@ impl Escrow {
             .get(&DataKey::Escrow(escrow_id))
             .expect("escrow not found");
 
-        assert!(escrow.state == EscrowState::Pending, "escrow not pending");
+        validate_fund_inputs(&escrow);
 
         escrow.buyer = Some(buyer.clone());
         escrow.state = EscrowState::Funded;
@@ -175,11 +186,8 @@ impl Escrow {
         env.events().publish(("confirm_delivery",), escrow_id);
     }
 
-    pub fn raise_dispute(env: Env, escrow_id: u32, evidence_hash: soroban_sdk::Bytes) {
-        assert!(
-            evidence_hash.len() == 32,
-            "evidence_hash must be exactly 32 bytes"
-        );
+    pub fn raise_dispute(env: Env, escrow_id: u32, evidence_hash: Bytes) {
+        validate_raise_dispute_inputs(&evidence_hash);
 
         let escrow: EscrowData = env
             .storage()
@@ -192,14 +200,18 @@ impl Escrow {
         let buyer = escrow.buyer.clone().expect("escrow has no buyer");
         buyer.require_auth();
 
+        let dispute = DisputeData {
+            evidence_hash: evidence_hash.clone(),
+            raised_at: env.ledger().timestamp(),
+            status: EscrowState::Disputed,
+        };
+
         let mut updated = escrow;
         updated.state = EscrowState::Disputed;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Escrow(escrow_id), &updated);
-        env.events()
-            .publish(("raise_dispute",), (escrow_id, evidence_hash));
+        env.storage().instance().set(&DataKey::Dispute(escrow_id), &dispute);
+        env.storage().instance().set(&DataKey::Escrow(escrow_id), &updated);
+        env.events().publish(("raise_dispute",), (escrow_id, evidence_hash));
     }
 
     pub fn resolve_dispute(env: Env, escrow_id: u32, release_to_seller: bool) {
@@ -266,6 +278,12 @@ impl Escrow {
             .expect("escrow not found")
     }
 
+    /// Returns dispute metadata for an escrow in Disputed state, or None if no
+    /// dispute has been raised.
+    pub fn get_dispute(env: Env, escrow_id: u32) -> Option<DisputeData> {
+        env.storage().instance().get(&DataKey::Dispute(escrow_id))
+    }
+
     /// Returns the current protocol fee configuration as a read-only view.
     pub fn get_fee_config(env: Env) -> FeeConfig {
         let collector: Address = env
@@ -278,6 +296,18 @@ impl Escrow {
             collector,
             max_fee_bps: MAX_FEE_BPS,
         }
+    }
+
+    /// Rotates the fee collector to a new address. Requires authorization from
+    /// the current fee collector, allowing rotation to a multisig account.
+    pub fn update_fee_collector(env: Env, new_collector: Address) {
+        let current: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeCollector)
+            .expect("not initialized");
+        current.require_auth();
+        env.storage().instance().set(&DataKey::FeeCollector, &new_collector);
     }
 }
 

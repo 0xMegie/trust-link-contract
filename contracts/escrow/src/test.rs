@@ -206,14 +206,14 @@ fn test_auto_release_before_window_fails() {
 #[test]
 #[should_panic(expected = "evidence_hash must be exactly 32 bytes")]
 fn test_raise_dispute_invalid_evidence_hash_rejected() {
-    let (env, seller, buyer, resolver, _admin, token) = setup_env();
+    let (env, seller, buyer, resolver, _admin, token, _fee_collector) = setup_env();
 
     let contract_id = env.register(Escrow, ());
     let client = super::EscrowClient::new(&env, &contract_id);
 
     mint_tokens(&env, &token, &buyer, 1000);
 
-    let id = client.create_escrow(&seller, &resolver, &token, &100_i128, &3600_u64);
+    let id = client.create_escrow(&seller, &resolver, &token, &100_i128, &200_u32, &3600_u64);
     client.fund_escrow(&id, &buyer);
 
     // 16-byte hash — must be rejected before any storage write
@@ -224,14 +224,14 @@ fn test_raise_dispute_invalid_evidence_hash_rejected() {
 #[test]
 #[should_panic(expected = "escrow not funded")]
 fn test_raise_dispute_only_once() {
-    let (env, seller, buyer, resolver, _admin, token) = setup_env();
+    let (env, seller, buyer, resolver, _admin, token, _fee_collector) = setup_env();
 
     let contract_id = env.register(Escrow, ());
     let client = super::EscrowClient::new(&env, &contract_id);
 
     mint_tokens(&env, &token, &buyer, 1000);
 
-    let id = client.create_escrow(&seller, &resolver, &token, &100_i128, &3600_u64);
+    let id = client.create_escrow(&seller, &resolver, &token, &100_i128, &200_u32, &3600_u64);
     client.fund_escrow(&id, &buyer);
 
     // First dispute — succeeds, state transitions to Disputed
@@ -292,7 +292,7 @@ fn test_create_escrow_with_non_usdc_token() {
     let contract_id = env.register(Escrow, ());
     let client = super::EscrowClient::new(&env, &contract_id);
 
-    let id = client.create_escrow(&seller, &resolver, &alt_token, &500_i128, &7200_u64);
+    let id = client.create_escrow(&seller, &resolver, &alt_token, &500_i128, &0_u32, &7200_u64);
     assert_eq!(id, 1);
 
     let escrow = client.get_escrow(&id);
@@ -321,7 +321,7 @@ fn test_fund_and_confirm_delivery_with_non_usdc_token() {
 
     mint_tokens(&env, &alt_token, &buyer, 1_000);
 
-    let id = client.create_escrow(&seller, &resolver, &alt_token, &300_i128, &3600_u64);
+    let id = client.create_escrow(&seller, &resolver, &alt_token, &300_i128, &0_u32, &3600_u64);
     client.fund_escrow(&id, &buyer);
 
     // Buyer balance reduced; contract holds the funds.
@@ -357,7 +357,7 @@ fn test_dispute_resolved_to_seller_with_non_usdc_token() {
 
     mint_tokens(&env, &alt_token, &buyer, 1_000);
 
-    let id = client.create_escrow(&seller, &resolver, &alt_token, &400_i128, &3600_u64);
+    let id = client.create_escrow(&seller, &resolver, &alt_token, &400_i128, &0_u32, &3600_u64);
     client.fund_escrow(&id, &buyer);
     client.raise_dispute(&id, &make_evidence_hash(&env));
 
@@ -388,7 +388,7 @@ fn test_dispute_refunded_to_buyer_with_non_usdc_token() {
 
     mint_tokens(&env, &alt_token, &buyer, 1_000);
 
-    let id = client.create_escrow(&seller, &resolver, &alt_token, &400_i128, &3600_u64);
+    let id = client.create_escrow(&seller, &resolver, &alt_token, &400_i128, &0_u32, &3600_u64);
     client.fund_escrow(&id, &buyer);
     client.raise_dispute(&id, &make_evidence_hash(&env));
     client.resolve_dispute(&id, &false);
@@ -418,7 +418,7 @@ fn test_auto_release_with_non_usdc_token() {
     mint_tokens(&env, &alt_token, &buyer, 1_000);
 
     let shipping_window: u64 = 86_400; // 24 hours
-    let id = client.create_escrow(&seller, &resolver, &alt_token, &250_i128, &shipping_window);
+    let id = client.create_escrow(&seller, &resolver, &alt_token, &250_i128, &0_u32, &shipping_window);
     client.fund_escrow(&id, &buyer);
 
     // Advance ledger time past the shipping window.
@@ -459,9 +459,9 @@ fn test_multi_asset_concurrent_escrows_different_tokens() {
     mint_tokens(&env, &token_b, &buyer_b, 2_000);
 
     // Escrow 1: token_a, amount 150
-    let id1 = client.create_escrow(&seller, &resolver, &token_a, &150_i128, &3600_u64);
+    let id1 = client.create_escrow(&seller, &resolver, &token_a, &150_i128, &0_u32, &3600_u64);
     // Escrow 2: token_b, amount 500
-    let id2 = client.create_escrow(&seller, &resolver, &token_b, &500_i128, &3600_u64);
+    let id2 = client.create_escrow(&seller, &resolver, &token_b, &500_i128, &0_u32, &3600_u64);
 
     assert_eq!(id1, 1);
     assert_eq!(id2, 2);
@@ -517,7 +517,7 @@ fn test_sequential_escrows_same_non_usdc_token() {
     // Create and fully settle three escrows in sequence.
     for (i, amount) in [100_i128, 200_i128, 300_i128].iter().enumerate() {
         let expected_id = (i as u32) + 1;
-        let id = client.create_escrow(&seller, &resolver, &alt_token, amount, &3600_u64);
+        let id = client.create_escrow(&seller, &resolver, &alt_token, amount, &0_u32, &3600_u64);
         assert_eq!(id, expected_id);
 
         client.fund_escrow(&id, &buyer);
@@ -534,6 +534,8 @@ fn test_sequential_escrows_same_non_usdc_token() {
     assert_eq!(get_balance(&env, &alt_token, &buyer), 4_400);
     // Contract holds nothing after all settlements.
     assert_eq!(get_balance(&env, &alt_token, &contract_id), 0);
+}
+
 #[test]
 fn test_zero_fee_no_collector_transfer() {
     let (env, seller, buyer, resolver, _admin, token, fee_collector) = setup_env();
@@ -577,4 +579,87 @@ fn test_fee_exceeds_max_bps_fails() {
 
     // 301 bps exceeds MAX_FEE_BPS (300)
     client.create_escrow(&seller, &resolver, &token, &1000_i128, &301_u32, &3600_u64);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #45: get_dispute view function
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_get_dispute_persisted_after_raise() {
+    let (env, seller, buyer, resolver, _admin, token, fee_collector) = setup_env();
+
+    let contract_id = env.register(Escrow, ());
+    let client = super::EscrowClient::new(&env, &contract_id);
+    client.initialize(&fee_collector);
+
+    mint_tokens(&env, &token, &buyer, 1000);
+
+    let id = client.create_escrow(&seller, &resolver, &token, &1000_i128, &200_u32, &3600_u64);
+    client.fund_escrow(&id, &buyer);
+
+    // No dispute before raise_dispute is called
+    assert!(client.get_dispute(&id).is_none());
+
+    let evidence = make_evidence_hash(&env);
+    let timestamp_before = env.ledger().timestamp();
+    client.raise_dispute(&id, &evidence);
+
+    let dispute = client.get_dispute(&id).expect("dispute not found after raise_dispute");
+    assert_eq!(dispute.evidence_hash, evidence);
+    assert_eq!(dispute.status, EscrowState::Disputed);
+    assert_eq!(dispute.raised_at, timestamp_before);
+}
+
+#[test]
+fn test_get_dispute_returns_none_before_raise() {
+    let (env, seller, buyer, resolver, _admin, token, fee_collector) = setup_env();
+
+    let contract_id = env.register(Escrow, ());
+    let client = super::EscrowClient::new(&env, &contract_id);
+    client.initialize(&fee_collector);
+
+    mint_tokens(&env, &token, &buyer, 1000);
+
+    let id = client.create_escrow(&seller, &resolver, &token, &1000_i128, &200_u32, &3600_u64);
+    assert!(client.get_dispute(&id).is_none(), "should be None before funding");
+
+    client.fund_escrow(&id, &buyer);
+    assert!(client.get_dispute(&id).is_none(), "should be None after funding but before dispute");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #92: admin rotating fee collector key to a multisig address
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_admin_rotate_fee_collector_to_multisig() {
+    let (env, seller, buyer, resolver, _admin, token, fee_collector) = setup_env();
+
+    let contract_id = env.register(Escrow, ());
+    let client = super::EscrowClient::new(&env, &contract_id);
+    client.initialize(&fee_collector);
+
+    // Register a second contract instance to stand in as a multisig smart-account
+    // address. On Testnet/Mainnet this would be a custom __check_auth account contract.
+    let multisig_id = env.register(Escrow, ());
+
+    // Active fee collector rotates the key to the multisig address
+    client.update_fee_collector(&multisig_id);
+
+    // Config reflects the new collector
+    let config = client.get_fee_config();
+    assert_eq!(config.collector, multisig_id);
+
+    // Protected methods (confirm_delivery) now route fees to the multisig
+    mint_tokens(&env, &token, &buyer, 1000);
+    let id = client.create_escrow(&seller, &resolver, &token, &1000_i128, &200_u32, &3600_u64);
+    client.fund_escrow(&id, &buyer);
+    client.confirm_delivery(&id);
+
+    // 2% fee on 1000 = 20 to new multisig collector, 980 to seller
+    assert_eq!(get_balance(&env, &token, &multisig_id), 20);
+    assert_eq!(get_balance(&env, &token, &seller), 980);
+    // Old collector received nothing after the rotation
+    assert_eq!(get_balance(&env, &token, &fee_collector), 0);
 }
